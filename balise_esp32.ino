@@ -29,7 +29,8 @@ const char ssid[] = "ILLEGAL_DRONE_AP";
 /**
   * CHANGEZ l'ID du drone par celui que Alphatango vous a fourni (Trigramme + Modèle + numéro série) !
   */
-const char drone_id[] = "ILLEGAL_DRONE_APPELEZ_POLICE17";
+                       // "000000000000000000000000000000"  // 30 caractères
+const char drone_id[31] = "ILLEGAL_DRONE_APPELEZ_POLICE17"; // si l'id est inférieur à 30 caractères, le compléter avec des "0"
 
 // =========== Includes ======================= //
 #include <ESP8266WiFi.h>
@@ -55,9 +56,11 @@ TinyGPSPlus gps;
 
 droneIDFR drone_idfr;
 
+// beacon frame definition
+static constexpr uint16_t MAX_BEACON_SIZE = 40 + 32 + droneIDFR::FRAME_PAYLOAD_LEN_MAX; // default beaconPacket size + max ssid size + max drone id frame size
 
 // beacon frame definition
-uint8_t beaconPacket[251] = {
+uint8_t beaconPacket[MAX_BEACON_SIZE] = {
   /*  0 - 3  */ 0x80, 0x00, 0x00, 0x00, // Type/Subtype: managment beacon frame
   /*  4 - 9  */ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Destination: broadcast
   /* 10 - 15 */ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, // Source
@@ -96,16 +99,23 @@ void setup() {
 
   // start WiFi
   WiFi.mode(WIFI_OFF);
-  wifi_set_opmode(STATION_MODE);
+  
+  // set default AP settings
+  WiFi.softAP(ssid, nullptr, 6, false, 0); // ssid, pwd, channel, hidden, max_cnx, 
+  WiFi.setOutputPower(20.5); // max 20.5dBm
+  
+  softap_config current_config;
+  wifi_softap_get_config(&current_config);
 
-  // set channel
-  wifi_set_channel(6);
-
+  current_config.beacon_interval = 1000;
+  wifi_softap_set_config(&current_config);
+  
   Serial.println();
   Serial.println("Started \\o/");
   Serial.println();
 
   softSerial.begin(GPS_BAUD_RATE);
+ 
   drone_idfr.set_drone_id(drone_id); 
 
   delay(3000);
@@ -118,7 +128,7 @@ void setup() {
 void loop()
 {
     static uint64_t gpsMap = 0;
-  
+
     switch (program) {
     case 0:
         // Ici on lit les données qui arrivent du GPS et on les passe à la librairie TinyGPS++ pour les traiter
@@ -137,6 +147,9 @@ void loop()
 
                 gpsMap = millis();
             }
+
+            return;
+            
         } else {
             // On traite le cas où la position GPS est valide.
             // On renseigne le point de démarrage quand la précision est satisfaisante
@@ -166,10 +179,7 @@ void loop()
 
     /**
      * On regarde s'il est temps d'envoyer la trame d'identification drone : soit toutes les 3s soit si le drone s'est déplacé de 30m en moins de 3s.
-     */
-
-            
-   
+     */            
      if (drone_idfr.time_to_send()) {
         Serial.println("Send beacon");
         /**
@@ -196,7 +206,7 @@ void loop()
         /**
          * On envoie la trame
          */
-         wifi_send_pkt_freedom(beaconPacket, sizeof(beaconPacket), 0);
+         wifi_send_pkt_freedom(beaconPacket, to_send, 0);
         
         /**
          * On reset la condition d'envoi
