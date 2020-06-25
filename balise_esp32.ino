@@ -30,7 +30,7 @@ const char ssid[] = "ILLEGAL_DRONE_AP";
   * CHANGEZ l'ID du drone par celui que Alphatango vous a fourni (Trigramme + Modèle + numéro série) !
   */
                        // "000000000000000000000000000000"  // 30 caractères
-const char drone_id[31] = "ILLEGAL_DRONE_APPELEZ_POLICE17"; // si l'id est inférieur à 30 caractères, le compléter avec des "0"
+const char drone_id[31] = "ILLEGAL_DRONE_APPELEZ_POLICE17"; // si l'id est inférieur à 30 caractères, le compléter avec des "0" au début
 
 // =========== Includes ======================= //
 #include <ESP8266WiFi.h>
@@ -85,12 +85,10 @@ static_assert((sizeof(ssid)/sizeof(*ssid))<=32, "AP SSID should be less than 32 
 // Vérification drone_id max 30 
 static_assert((sizeof(drone_id)/sizeof(*drone_id))<=31, "Drone ID should be less that 30 letters !");  // 30 lettres + null termination
 
-bool has_set_home = false;
-double home_alt = 0.0;
-
 uint8_t program = 0;
 char buff[5][256];
 uint64_t gpsSec = 0;
+uint64_t beaconSec = 0;
 
 void setup() {
   // start serial
@@ -118,7 +116,7 @@ void setup() {
  
   drone_idfr.set_drone_id(drone_id); 
 
-  delay(3000);
+  delay(5000);
 }
 
 
@@ -128,7 +126,7 @@ void setup() {
 void loop()
 {
     static uint64_t gpsMap = 0;
-
+        
     switch (program) {
     case 0:
         // Ici on lit les données qui arrivent du GPS et on les passe à la librairie TinyGPS++ pour les traiter
@@ -150,38 +148,54 @@ void loop()
 
             return;
             
-        } else {
+        } else if (gps.location.isUpdated() && gps.altitude.isUpdated() && gps.course.isUpdated() && gps.speed.isUpdated()){
             // On traite le cas où la position GPS est valide.
             // On renseigne le point de démarrage quand la précision est satisfaisante
-            if (!has_set_home && gps.satellites.value() > 6 && gps.hdop.hdop() < 2.0) {
+            if (!drone_idfr.has_home_set() && gps.satellites.value() > 6 && gps.hdop.hdop() < 2.0) {
                 Serial.println("Setting Home Position");
-                drone_idfr.set_home_lat_lon(gps.location.lat(), gps.location.lng());
-                has_set_home = true;
-                home_alt = gps.altitude.meters();
+                drone_idfr.set_home_position(gps.location.lat(), gps.location.lng(), gps.altitude.meters());
             }
-            // On envoie les données à la librairie d'identification drone pour le formatage.
-            drone_idfr.set_lat_lon(gps.location.lat(), gps.location.lng());
-            drone_idfr.set_altitude(gps.altitude.meters());
+
+            
+            // On actualise les données GPS de la librairie d'identification drone.
+            drone_idfr.set_current_position(gps.location.lat(), gps.location.lng(), gps.altitude.meters());
             drone_idfr.set_heading(gps.course.deg());
             drone_idfr.set_ground_speed(gps.speed.mps());
-            drone_idfr.set_heigth(gps.altitude.meters() - home_alt);
-            // Ici on ecrit sur le port Serie des données GPS pour visualisation seulement.
-            if (millis() - gpsMap > 1000) {         
+
+            /*
+            float gps_time_elapsed = (float(millis() - gpsMap) / 1000.0f); 
+            gpsMap = millis();
+        
+            Serial.println(gps_time_elapsed,3);
+            */
+            
+            // Ici on affiche les données GPS pour sur le port Serie, toutes les secondes.
+            // Décommenter ce block pour voir les informations détaillées sur le port série
+            /*if (millis() - gpsMap > 1000) {         
                 Serial.print("LAT=");  Serial.print(gps.location.lat(), 6); Serial.print(" LONG="); Serial.print(gps.location.lng(), 6);
-                Serial.print(" ALT=");  Serial.print(gps.altitude.meters());  Serial.print(" SAT=");  Serial.println(gps.satellites.value());
-                
+                Serial.print(" ALT=");  Serial.print(gps.altitude.meters());  Serial.print(" SAT=");  Serial.print(gps.satellites.value());
+                Serial.print(" DOP=");  Serial.print(gps.hdop.hdop());  Serial.print(" DISTfromLAST_POS_Sent=");  Serial.println(drone_idfr.get_distance_from_last_position_sent());
                 gpsMap = millis();
-            }
+            }*/
         }
         break;
     }
 
 
     /**
-     * On regarde s'il est temps d'envoyer la trame d'identification drone : soit toutes les 3s soit si le drone s'est déplacé de 30m en moins de 3s.
+     * On regarde s'il est temps d'envoyer la trame d'identification drone : 
+     *  - soit toutes les 3s,
+     *  - soit si le drone s'est déplacé de 30m,
+     *  - uniquement si la position Home est déjà définie,
+     *  - et dans le cas où les données GPS sont nouvelles.
      */            
-     if (drone_idfr.time_to_send()) {
-        Serial.println("Send beacon");
+     if (drone_idfr.has_home_set() && drone_idfr.time_to_send()) {
+        float time_elapsed = (float(millis() - beaconSec) / 1000); 
+        beaconSec = millis();
+        
+        Serial.print(time_elapsed,1); Serial.print("s Send beacon: "); Serial.print(drone_idfr.has_pass_distance() ? "Distance" : "Time");
+        Serial.print(" with ");  Serial.print(drone_idfr.get_distance_from_last_position_sent()); Serial.print("m Speed="); Serial.println(drone_idfr.get_ground_speed_kmh()); 
+        
         /**
          * On commence par renseigner le ssid du wifi dans la trame
          */
@@ -194,7 +208,7 @@ void loop()
          * On génère la trame wifi avec l'identification
          */
         const uint8_t to_send = drone_idfr.generate_beacon_frame(beaconPacket, header_size);  // override the null termination
-        // Décommenter ce block pour voir la trame entière sur le port usb
+        // Décommenter ce block pour voir la trame entière sur le port série
         /* Serial.println("beaconPacket : ");
         for (auto i=0; i<sizeof(beaconPacket);i++) {
             Serial.print(beaconPacket[i], HEX);
