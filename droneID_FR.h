@@ -39,64 +39,89 @@ public:
      *
      */
     static constexpr uint8_t FRAME_PAYLOAD_LEN_MAX = 251;
-
+  
     /**
-     * Setter pour les coordonnées GPS en entier en centidegrees
+     * Setter position avec les coordonnées GPS en entier en centidegrees + altitude
      * @param lat
      * @param lon
+     * @param alt
      */
-    void set_lat_lon(int32_t lat, int32_t lon) {
-        _old_latitude = _latitude;
-        _old_longitude = _longitude;
+    void set_current_position(int32_t lat, int32_t lon, int16_t alt) {
         _latitude = lat * 1e-2;
         _longitude = lon * 1e-2;
-        _travelled_distance += distanceBetween(static_cast<double>(lat) * 1e-7, static_cast<double>(lon) * 1e-7, static_cast<double>(_old_latitude) * 1e-5, static_cast<double>(_old_longitude) * 1e-5);
+        _altitude = alt;
+
+        if(_home_set){
+          // Update height above Home
+          _height = _altitude - _home_altitude;
+
+          // 2D distance from previous position sent (meters)
+          _2D_distance = distanceBetween(static_cast<double>(lat) * 1e-7, static_cast<double>(lon) * 1e-7, static_cast<double>(_last_latitude_sent) * 1e-5, static_cast<double>(_last_longitude_sent) * 1e-5);
+          
+          // 3D distance from last position sent (meters)
+          _distance_from_last_point_sent = sqrt((_2D_distance * _2D_distance) + ((_last_altitude - _altitude) * (_last_altitude - _altitude)));
+        }
     }
     /**
-     * Setter pour les coordonnées GPS en double en centidegrees
+     * Setter position avec les coordonnées GPS en double en centidegrees + altitude
      * Converti les valeurs en entiers.
      * @param lat
      * @param lon
      */
-    void set_lat_lon(double lat, double lon) {
-        _old_latitude = _latitude;
-        _old_longitude = _longitude;
+    void set_current_position(double lat, double lon, int16_t alt) {
         _latitude = lat * 1e5;
         _longitude = lon * 1e5;
-        _travelled_distance += distanceBetween(lat, lon, static_cast<double>(_old_latitude) * 1e-5, static_cast<double>(_old_longitude) * 1e-5);
+        _altitude = alt;
+
+        if(_home_set){
+          // Update height above Home
+          _height = _altitude - _home_altitude;
+
+          // 2D distance from previous position sent (meters)
+          _2D_distance = distanceBetween(lat,lon, static_cast<double>(_last_latitude_sent) * 1e-5, static_cast<double>(_last_longitude_sent) * 1e-5);
+          
+          // 3D distance from last position sent (meters)
+          _distance_from_last_point_sent = sqrt((_2D_distance * _2D_distance) + ((_last_altitude - _altitude) * (_last_altitude - _altitude)));
+        }
     }
     /**
-     * Setter pour l'altitude en MSL (Mean Sea Level)/ Niveau au dessus de la mer en m
+     * Setter position Home avec les coordonnées GPS en entiers en centidegrees + altitude
+     * @param lat
+     * @param lon
      * @param alt
      */
-    void set_altitude(int16_t alt) {
-        _altitude = alt;
-    }
-    /**
-     * Setter pour la hauteur au sol par rapport au point de décollage en m
-     * @param height
-     */
-    void set_heigth(int16_t height) {
-        _height = height;
-    }
-    /**
-     * Setter pour les coordonnées GPS en entiers en centidegrees
-     * @param lat
-     * @param lon
-     */
-    void set_home_lat_lon(int32_t lat, int32_t lon) {
+    void set_home_position(int32_t lat, int32_t lon, int16_t alt) {
         _home_latitude = lat * 1e-2;
         _home_longitude = lon * 1e-2;
+        _home_altitude = alt; 
+
+        // Init
+        _last_latitude_sent = _home_latitude;
+        _last_longitude_sent = _home_longitude;
+        _last_altitude = _altitude;
+        
+        _home_set = true;
     }
     /**
-     * Setter pour les coordonnées GPS en entiers en centidegrees
+     * Setter position Home avec les coordonnées GPS en double en centidegrees + altitude
+     * Converti les valeurs en entiers.
      * @param lat
      * @param lon
+     * @param alt
      */
-    void set_home_lat_lon(double lat, double lon) {
+    void set_home_position(double lat, double lon, int16_t alt) {
         _home_latitude = lat * 1e5;
         _home_longitude = lon * 1e5;
+        _home_altitude = alt; 
+        
+        // Init
+        _last_latitude_sent = _home_latitude;
+        _last_longitude_sent = _home_longitude;
+        _last_altitude = _altitude;
+        
+        _home_set = true;
     }
+      
     /**
      * Setter pour la vitesse au sol en m/s
      * @param ground_speed
@@ -111,7 +136,6 @@ public:
     void set_heading(uint16_t heading) {
         _heading = heading;
     }
-
     /**
      * Setter pour l'id du drone.
      * Utiliser cette fonction pour changer l'id par défault
@@ -121,6 +145,13 @@ public:
         // don't use std::copy as it isn't support on all targets like espressif32 sdk !
         // TODO : if size(id_value) < TLV_LENGTH[ID_FR], fill with 0
         memcpy(_droneID, id_value, TLV_LENGTH[ID_FR]);
+    }
+    /**
+     * Renvoie la distance (3D) par rapport à la dernière position envoyée.
+     * 
+     */
+    double get_distance_from_last_position_sent(){
+        return _distance_from_last_point_sent;
     }
 
     /**
@@ -246,15 +277,28 @@ public:
     }
 
     /**
-     * Sauvegarde la dernière fois qu'une trame a été envoyé pour respecter le timing d'une trame toutes les 3s
+     * Sauvegarde les données de la dernière trame envoyée : Position et Temps
      */
     void set_last_send() {
+        // Temps
         _last_send = std::chrono::high_resolution_clock::now();
-        _travelled_distance = 0.0;
+        
+        // Position
+        _last_latitude_sent = _latitude;
+        _last_longitude_sent = _longitude;
+        _last_altitude = _altitude;
+        
     }
-
+    
     /**
-     * Notifie quand 3s sont passés pour envoyer une nouvelle trame.
+     * Notifie si la position Home est définie
+     * @return true if Home is set
+     */
+    bool has_home_set() const {
+        return _home_set == true;
+    } 
+    /**
+     * Notifie quand 3s sont écoulés pour envoyer une nouvelle trame.
      * @return true if elapse time is > 3s
      */
     bool has_pass_time() const {
@@ -262,14 +306,14 @@ public:
         return elapsed.count() >= FRAME_TIME_LIMIT;
     }
     /**
-     * Notifie quand le drone a bougé de plus de 30m en moins de 3s.
-     * @return true if distance travelled > 30m
+     * Notifie quand le drone a bougé de plus de 30m depuis le dernier envoi
+     * @return true if distance from last point sent is > 30m
      */
     bool has_pass_distance() const {
-        return _travelled_distance >= FRAME_DISTANCE_LIMIT;
-    }
+        return _distance_from_last_point_sent >= FRAME_DISTANCE_LIMIT;
+    } 
     /**
-     * Notifie si la condition de distance ou de temps est passé pour envoyer une nouvelle trame.
+     * Notifie si la condition de distance ou de temps est dépassée pour envoyer une nouvelle trame.
      * @return
      */
     bool time_to_send() const {
@@ -344,14 +388,18 @@ private:
     int16_t _height;
     int32_t _home_latitude;
     int32_t _home_longitude;
+    int16_t _home_altitude;
     uint8_t _ground_speed;
     uint16_t _heading;
     uint8_t _droneID[TLV_LENGTH[ID_FR]+1]; // +1 for null termination
     std::chrono::system_clock::time_point _last_send = std::chrono::system_clock::now();
     // for travelled distance calculation
-    int32_t _old_latitude;
-    int32_t _old_longitude;
-    double _travelled_distance;
+    int32_t _last_latitude_sent;
+    int32_t _last_longitude_sent;
+    int16_t _last_altitude;
+    double _distance_from_last_point_sent;
+    bool _home_set = false;
+    double _2D_distance;
 
 
     static inline uint32_t get_2_complement(int32_t value) {
