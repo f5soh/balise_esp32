@@ -51,15 +51,21 @@ public:
         _longitude = lon * 1e-2;
         _altitude = alt;
 
+        _new_GPS_data = true;
+        std::chrono::duration<double> time_period_GPS = std::chrono::high_resolution_clock::now() - _last_data_rcv;
+        _last_data_rcv = std::chrono::high_resolution_clock::now();
+        
+        _data_period_GPS = (_data_period_GPS * 0.8) + (time_period_GPS.count() * 0.2);
+        
         if(_home_set){
           // Update height above Home
           _height = _altitude - _home_altitude;
 
-          // 2D distance from previous position sent (meters)
+          // 2D distance from previous position sent (meters, deg)
           _2D_distance = distanceBetween(static_cast<double>(lat) * 1e-7, static_cast<double>(lon) * 1e-7, static_cast<double>(_last_latitude_sent) * 1e-5, static_cast<double>(_last_longitude_sent) * 1e-5);
           
           // 3D distance from last position sent (meters)
-          _distance_from_last_point_sent = sqrt((_2D_distance * _2D_distance) + ((_last_altitude - _altitude) * (_last_altitude - _altitude)));
+          _3D_distance_from_last_point_sent = sqrt((_2D_distance * _2D_distance) + ((_last_altitude_sent - _altitude) * (_last_altitude_sent - _altitude)));
         }
     }
     /**
@@ -67,21 +73,28 @@ public:
      * Converti les valeurs en entiers.
      * @param lat
      * @param lon
+     * @param alt
      */
     void set_current_position(double lat, double lon, int16_t alt) {
         _latitude = lat * 1e5;
         _longitude = lon * 1e5;
         _altitude = alt;
 
+        _new_GPS_data = true;
+        std::chrono::duration<double> time_period_GPS = std::chrono::high_resolution_clock::now() - _last_data_rcv;
+        _last_data_rcv = std::chrono::high_resolution_clock::now(); 
+        
+        _data_period_GPS = (_data_period_GPS * 0.8) + (time_period_GPS.count() * 0.2);
+
         if(_home_set){
           // Update height above Home
           _height = _altitude - _home_altitude;
 
-          // 2D distance from previous position sent (meters)
+          // 2D distance from previous position sent (meters, deg)
           _2D_distance = distanceBetween(lat,lon, static_cast<double>(_last_latitude_sent) * 1e-5, static_cast<double>(_last_longitude_sent) * 1e-5);
           
           // 3D distance from last position sent (meters)
-          _distance_from_last_point_sent = sqrt((_2D_distance * _2D_distance) + ((_last_altitude - _altitude) * (_last_altitude - _altitude)));
+          _3D_distance_from_last_point_sent = sqrt((_2D_distance * _2D_distance) + ((_last_altitude_sent - _altitude) * (_last_altitude_sent - _altitude)));
         }
     }
     /**
@@ -98,7 +111,7 @@ public:
         // Init
         _last_latitude_sent = _home_latitude;
         _last_longitude_sent = _home_longitude;
-        _last_altitude = _altitude;
+        _last_altitude_sent = _home_altitude;
         
         _home_set = true;
     }
@@ -117,7 +130,7 @@ public:
         // Init
         _last_latitude_sent = _home_latitude;
         _last_longitude_sent = _home_longitude;
-        _last_altitude = _altitude;
+        _last_altitude_sent = _home_altitude;
         
         _home_set = true;
     }
@@ -126,7 +139,7 @@ public:
      * Setter pour la vitesse au sol en m/s
      * @param ground_speed
      */
-    void set_ground_speed(uint8_t ground_speed) {
+    void set_ground_speed(double ground_speed) {
         _ground_speed = ground_speed;
     }
     /**
@@ -151,9 +164,15 @@ public:
      * 
      */
     double get_distance_from_last_position_sent(){
-        return _distance_from_last_point_sent;
+        return _3D_distance_from_last_point_sent;
     }
-
+    /**
+     * Renvoie la vitesse GPS au sol.
+     * @return ground speed in km/h
+     */
+    double get_ground_speed_kmh(){
+        return _ground_speed * 3.6;
+    }
     /**
      * Genère la frame 802.11 beacon complète
      * @param full_frame beacon frame buffer
@@ -261,7 +280,7 @@ public:
         count++;
         full_frame[start_from + count] = TLV_LENGTH[GROUND_SPEED];
         count++;
-        full_frame[start_from + count] = _ground_speed;
+        full_frame[start_from + count] = round(_ground_speed);
         count++;
         // HEADING
         full_frame[start_from + count] = HEADING;
@@ -282,12 +301,11 @@ public:
     void set_last_send() {
         // Temps
         _last_send = std::chrono::high_resolution_clock::now();
-        
+                
         // Position
         _last_latitude_sent = _latitude;
         _last_longitude_sent = _longitude;
-        _last_altitude = _altitude;
-        
+        _last_altitude_sent = _altitude;      
     }
     
     /**
@@ -301,23 +319,40 @@ public:
      * Notifie quand 3s sont écoulés pour envoyer une nouvelle trame.
      * @return true if elapse time is > 3s
      */
-    bool has_pass_time() const {
+    bool has_pass_time() {
         std::chrono::duration<double> elapsed = std::chrono::high_resolution_clock::now() - _last_send;
-        return elapsed.count() >= FRAME_TIME_LIMIT;
+        return elapsed.count() + _data_period_GPS >= FRAME_TIME_LIMIT;
     }
     /**
-     * Notifie quand le drone a bougé de plus de 30m depuis le dernier envoi
-     * @return true if distance from last point sent is > 30m
+     * Notifie si le drone a bougé de plus de 30m depuis le dernier envoi,
+     * avec une trajectoire rectiligne et une vitesse "rapide" l'envoi est anticipé
+     * pour éviter de dépasser les 30m.
+     * @return true if distance from last point sent will be > 30m
      */
-    bool has_pass_distance() const {
-        return _distance_from_last_point_sent >= FRAME_DISTANCE_LIMIT;
-    } 
+    bool has_pass_distance() {         
+        _predicted_distance = 0;
+        
+        // If enough speed, look forward for next point with estimated distance increased by 10%
+        if(_ground_speed >= (FRAME_DISTANCE_LIMIT/FRAME_TIME_LIMIT)){          
+          _predicted_distance = (_data_period_GPS * _ground_speed * 1.1);
+        }
+        
+        return (_3D_distance_from_last_point_sent +_predicted_distance) >= FRAME_DISTANCE_LIMIT;
+    }
     /**
-     * Notifie si la condition de distance ou de temps est dépassée pour envoyer une nouvelle trame.
+     * Notifie si la condition de distance ou de temps est dépassée pour envoyer une nouvelle trame,
+     * et si de nouvelles données GPS sont présentes.
      * @return
      */
-    bool time_to_send() const {
-        return has_pass_time() || has_pass_distance();
+    bool time_to_send() {
+        bool current_status = _new_GPS_data;
+
+        if(current_status){
+          // Reset
+          _new_GPS_data = false;
+        }
+        
+        return current_status && (has_pass_time() || has_pass_distance());
     }
 
 private:
@@ -389,18 +424,21 @@ private:
     int32_t _home_latitude;
     int32_t _home_longitude;
     int16_t _home_altitude;
-    uint8_t _ground_speed;
+    double _ground_speed;
     uint16_t _heading;
     uint8_t _droneID[TLV_LENGTH[ID_FR]+1]; // +1 for null termination
     std::chrono::system_clock::time_point _last_send = std::chrono::system_clock::now();
+    std::chrono::system_clock::time_point _last_data_rcv = std::chrono::system_clock::now();
     // for travelled distance calculation
     int32_t _last_latitude_sent;
     int32_t _last_longitude_sent;
-    int16_t _last_altitude;
-    double _distance_from_last_point_sent;
-    bool _home_set = false;
+    int16_t _last_altitude_sent;
+    double _data_period_GPS = 0;
     double _2D_distance;
-
+    double _3D_distance_from_last_point_sent;
+    double _predicted_distance;
+    bool _home_set = false;
+    bool _new_GPS_data = false;
 
     static inline uint32_t get_2_complement(int32_t value) {
         return value & 0xFFFFFFFF;
