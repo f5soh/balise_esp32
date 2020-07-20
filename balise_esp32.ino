@@ -85,7 +85,7 @@ static_assert((sizeof(ssid)/sizeof(*ssid))<=32, "AP SSID should be less than 32 
 // Vérification drone_id max 30 
 static_assert((sizeof(drone_id)/sizeof(*drone_id))<=31, "Drone ID should be less that 30 letters !");  // 30 lettres + null termination
 
-uint8_t program = 0;
+uint8_t program = 0; // 1: test beacon without GPS
 char buff[5][256];
 uint64_t gpsSec = 0;
 uint64_t beaconSec = 0;
@@ -179,6 +179,14 @@ void loop()
             }*/
         }
         break;
+    case 1:
+        // Envoi données GPS de test
+        drone_idfr.set_current_position(43.1234, -0.1234, 223);
+        drone_idfr.set_heading(234);
+        drone_idfr.set_ground_speed(45);
+
+        drone_idfr.set_home_position(43.1234, -0.1234, 100);
+        
     }
 
 
